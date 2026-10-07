@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+data/*.db
+*.db
+project_ideas.md
+IMPLEMENTATION_GUIDE.md
