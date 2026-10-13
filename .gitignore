@@ -7,3 +7,4 @@ data/*.db
 *.db
 project_ideas.md
 IMPLEMENTATION_GUIDE.md
+raw_data/
