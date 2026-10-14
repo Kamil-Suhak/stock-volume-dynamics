@@ -13,9 +13,19 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS symbols (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker TEXT UNIQUE NOT NULL
+            ticker TEXT UNIQUE NOT NULL,
+            shares_outstanding INTEGER,
+            market_cap REAL
         );
     """)
+    try:
+        cur.execute("ALTER TABLE symbols ADD COLUMN shares_outstanding INTEGER;")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE symbols ADD COLUMN market_cap REAL;")
+    except Exception:
+        pass
     cur.execute("""
         CREATE TABLE IF NOT EXISTS hourly_bars (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,3 +131,10 @@ def get_latest_timestamp(con, symbol_id):
     cur.execute("SELECT MAX(timestamp) FROM hourly_bars WHERE symbol_id = ?", (symbol_id,))
     row = cur.fetchone()
     return row[0] if row else None
+
+def update_symbol_fundamentals(con, ticker, shares_outstanding, market_cap):
+    cur = con.cursor()
+    cur.execute("""
+        UPDATE symbols SET shares_outstanding = ?, market_cap = ? WHERE ticker = ?;
+    """, (shares_outstanding, market_cap, ticker))
+    con.commit()

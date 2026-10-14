@@ -68,6 +68,8 @@ def load_data(tickers=None, rth_only=True):
     query = """
         SELECT 
             s.ticker,
+            s.shares_outstanding,
+            s.market_cap,
             b.id AS bar_id,
             b.timestamp,
             b.open,
@@ -100,6 +102,9 @@ def load_data(tickers=None, rth_only=True):
     bars_df['timestamp_et'] = bars_df['timestamp'].dt.tz_convert('America/New_York')
     bars_df['hour'] = bars_df['timestamp_et'].dt.hour
     bars_df['day_of_week'] = bars_df['timestamp_et'].dt.day_name()
+
+    half_day_dates = {'2024-11-29', '2024-12-24', '2025-07-03', '2025-11-28', '2025-12-24', '2026-07-03'}
+    bars_df['is_half_day'] = bars_df['timestamp_et'].dt.strftime('%Y-%m-%d').isin(half_day_dates).astype(float)
 
     if rth_only:
         bars_df = bars_df[(bars_df['hour'] >= 9) & (bars_df['hour'] <= 15)].copy()
@@ -141,6 +146,7 @@ def calc_ticker_features(group):
     g['spread'] = (g['high'] - g['low']) / g['open']
     g['abs_return'] = ((g['close'] - g['open']) / g['open']).abs()
     g['overnight_gap'] = ((g['open'] - g['close'].shift(1)) / g['close'].shift(1)).abs()
+    g['gap_shock'] = (g['overnight_gap'] > 0.025).astype(float)
 
     trade_size = g['volume'] / g['transactions'].replace(0, 1)
     g['lag_log_trade_size'] = np.log(trade_size.clip(lower=1.0)).shift(1)
@@ -149,6 +155,12 @@ def calc_ticker_features(group):
     g['lag_abs_return'] = g['abs_return'].shift(1)
     g['rolling_spread_5h'] = g['spread'].rolling(5, min_periods=1).mean().shift(1)
     g['vol_std_20h'] = g['target_log_vol'].rolling(20, min_periods=5).std().shift(1).fillna(0.3)
+
+    # Fundamental float & turnover
+    shares = g['shares_outstanding'].iloc[0] if 'shares_outstanding' in g and pd.notnull(g['shares_outstanding'].iloc[0]) else 1e9
+    mcap = g['market_cap'].iloc[0] if 'market_cap' in g and pd.notnull(g['market_cap'].iloc[0]) else 1e11
+    g['log_mcap'] = float(np.log(max(mcap, 1.0)))
+    g['lag_turnover'] = np.log(g['volume'].shift(1) / max(shares, 1.0)).fillna(-10.0)
 
     return g
 
@@ -175,13 +187,13 @@ def build_features(df, mode="forward"):
 
     fwd_cols = [
         'regime_ratio', 'lag_rvol_1h', 'lag_rvol_2h', 'rvol_momentum', 'lag_rvol_same_hour',
-        'lag_spread', 'lag_abs_return', 'overnight_gap', 'lag_log_trade_size',
-        'rolling_spread_5h', 'vol_std_20h', 'log_news_surge'
+        'lag_spread', 'lag_abs_return', 'overnight_gap', 'gap_shock', 'lag_log_trade_size',
+        'rolling_spread_5h', 'vol_std_20h', 'lag_turnover', 'log_mcap', 'is_half_day', 'log_news_surge'
     ]
     exp_cols = [
         'regime_ratio', 'lag_rvol_1h', 'rvol_momentum', 'lag_rvol_same_hour',
-        'spread', 'abs_return', 'overnight_gap', 'lag_log_trade_size',
-        'rolling_spread_5h', 'vol_std_20h', 'log_news_surge'
+        'spread', 'abs_return', 'overnight_gap', 'gap_shock', 'lag_log_trade_size',
+        'rolling_spread_5h', 'vol_std_20h', 'lag_turnover', 'log_mcap', 'is_half_day', 'log_news_surge'
     ]
 
     X_forward = pd.concat([df_clean[fwd_cols], calendar_df], axis=1)

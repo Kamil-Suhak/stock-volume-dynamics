@@ -9,7 +9,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from src.db import init_db, get_connection, get_or_create_symbol, insert_hourly_bars, insert_articles, get_latest_timestamp
+from src.db import init_db, get_connection, get_or_create_symbol, insert_hourly_bars, insert_articles, get_latest_timestamp, update_symbol_fundamentals
 
 BASE_URL = "https://api.massive.com/v2/aggs/ticker/"
 NEWS_URL = "https://api.massive.com/v2/reference/news"
@@ -166,3 +166,18 @@ def ingest_news_articles(ticker, max_pages=3):
                 time.sleep(SLEEP_TIME)
     finally:
         con.close()
+
+
+def ingest_ticker_fundamentals(ticker):
+    init_db()
+    con = get_connection()
+    url = f"https://api.massive.com/v3/reference/tickers/{ticker}"
+    res = request_with_retry(url, params={"apiKey": API_KEY})
+    if res and res.status_code == 200:
+        data = res.json().get("results", {})
+        shares = data.get("weighted_shares_outstanding") or data.get("share_class_shares_outstanding")
+        mcap = data.get("market_cap")
+        if shares and mcap:
+            update_symbol_fundamentals(con, ticker, shares, mcap)
+            print(f"Updated fundamentals for {ticker}: {shares:,} shares, ${mcap:,.0f} mcap")
+    con.close()
