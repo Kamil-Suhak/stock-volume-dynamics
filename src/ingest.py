@@ -9,13 +9,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from src.db import init_db, get_connection, get_or_create_symbol, insert_hourly_bars, insert_articles, get_latest_timestamp, update_symbol_fundamentals
+from src.db import init_db, get_connection, get_or_create_symbol, insert_hourly_bars, get_latest_timestamp, update_symbol_fundamentals
 
 BASE_URL = "https://api.massive.com/v2/aggs/ticker/"
-NEWS_URL = "https://api.massive.com/v2/reference/news"
 API_KEY = "BJox5qIIzSxo2VSBknxLN7d8uQYs7uge"
 RAW_DATA_DIR = BASE_DIR / "raw_data"
 SLEEP_TIME = 12.5
+_LAST_REQUEST_TIME = 0.0
 
 
 def get_next_chunk_index(ticker_dir, prefix):
@@ -28,12 +28,18 @@ def get_next_chunk_index(ticker_dir, prefix):
 
 
 def request_with_retry(url, params=None, max_retries=5):
+    global _LAST_REQUEST_TIME
     for attempt in range(max_retries):
+        elapsed = time.time() - _LAST_REQUEST_TIME
+        if _LAST_REQUEST_TIME > 0 and elapsed < SLEEP_TIME:
+            time.sleep(SLEEP_TIME - elapsed)
         try:
+            _LAST_REQUEST_TIME = time.time()
             res = requests.get(url, params=params, timeout=30)
             if res.status_code == 429:
                 print("Rate limit reached. Sleeping 30s...")
                 time.sleep(30)
+                _LAST_REQUEST_TIME = time.time()
                 continue
             if res.status_code in (500, 502, 503, 504):
                 print(f"Server error {res.status_code}. Retrying in 15s...")
@@ -64,9 +70,9 @@ def ingest_hourly_bars(ticker):
         con.close()
         return
 
-    bars_dir = RAW_DATA_DIR / ticker / "bars"
-    bars_dir.mkdir(parents=True, exist_ok=True)
-    chunk_idx = get_next_chunk_index(bars_dir, "chunk")
+    ticker_dir = RAW_DATA_DIR / ticker
+    ticker_dir.mkdir(parents=True, exist_ok=True)
+    chunk_idx = get_next_chunk_index(ticker_dir, "chunk")
 
     next_url = f"{BASE_URL}{ticker}/range/1/hour/{start_date}/{end_date}?adjusted=true&sort=asc&limit=5000"
 
@@ -87,7 +93,7 @@ def ingest_hourly_bars(ticker):
             if next_url and next_url.startswith("https://api.polygon.io"):
                 next_url = next_url.replace("https://api.polygon.io", "https://api.massive.com")
 
-            chunk_file = bars_dir / f"chunk_{chunk_idx:04d}.json"
+            chunk_file = ticker_dir / f"chunk_{chunk_idx:04d}.json"
             with open(chunk_file, "w") as f:
                 json.dump(data, f, indent=2)
 
@@ -113,64 +119,16 @@ def ingest_hourly_bars(ticker):
         con.close()
 
 
-def ingest_news_articles(ticker, max_pages=3):
-    init_db()
-    con = get_connection()
-    sym_id = get_or_create_symbol(con, ticker)
-
-    start_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=730)).strftime("%Y-%m-%d")
-
-    news_dir = RAW_DATA_DIR / ticker / "news"
-    news_dir.mkdir(parents=True, exist_ok=True)
-    news_idx = get_next_chunk_index(news_dir, "news")
-
-    next_url = NEWS_URL
-    params = {
-        "ticker": ticker,
-        "order": "asc",
-        "limit": 1000,
-        "sort": "published_utc",
-        "published_utc.gte": start_date,
-        "apiKey": API_KEY,
-    }
-    pages_fetched = 0
-
-    try:
-        while next_url and pages_fetched < max_pages:
-            req_params = params if next_url == NEWS_URL else ({"apiKey": API_KEY} if "apiKey=" not in next_url else None)
-            res = request_with_retry(next_url, params=req_params)
-            if not res or res.status_code != 200:
-                err_msg = res.text if res else "No response"
-                print(f"Failed to fetch news for {ticker}: {err_msg}")
-                break
-
-            data = res.json()
-            results = data.get("results", [])
-            if not results:
-                break
-
-            next_url = data.get("next_url")
-            if next_url and next_url.startswith("https://api.polygon.io"):
-                next_url = next_url.replace("https://api.polygon.io", "https://api.massive.com")
-
-            news_file = news_dir / f"news_{news_idx:04d}.json"
-            with open(news_file, "w") as f:
-                json.dump(data, f, indent=2)
-
-            insert_articles(con, results, sym_id)
-            print(f"Saved {len(results)} articles -> {news_file}")
-            news_idx += 1
-            pages_fetched += 1
-
-            if next_url and pages_fetched < max_pages:
-                time.sleep(SLEEP_TIME)
-    finally:
-        con.close()
-
-
 def ingest_ticker_fundamentals(ticker):
     init_db()
     con = get_connection()
+    cur = con.cursor()
+    cur.execute("SELECT shares_outstanding, market_cap FROM symbols WHERE ticker = ?", (ticker,))
+    row = cur.fetchone()
+    if row and row[0] is not None and row[1] is not None:
+        con.close()
+        return
+
     url = f"https://api.massive.com/v3/reference/tickers/{ticker}"
     res = request_with_retry(url, params={"apiKey": API_KEY})
     if res and res.status_code == 200:

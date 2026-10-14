@@ -86,27 +86,6 @@ def load_db_data():
     return symbols_df, bars_df, preds_df, benchmarks_df
 
 
-@st.cache_data(ttl=60)
-def load_ticker_news(ticker):
-    con = sqlite3.connect("data/market.db")
-    query = """
-        SELECT a.published_utc, a.title, a.author, a.article_url
-        FROM articles a
-        JOIN article_symbols j ON j.article_id = a.id
-        JOIN symbols s ON s.id = j.symbol_id
-        WHERE s.ticker = ?
-        ORDER BY a.published_utc DESC
-        LIMIT 25;
-    """
-    try:
-        df = pd.read_sql_query(query, con, params=(ticker,))
-    except Exception:
-        df = pd.DataFrame(columns=['published_utc', 'title', 'author', 'article_url'])
-    finally:
-        con.close()
-    return df
-
-
 symbols_df, bars_df, preds_df, benchmarks_df = load_db_data()
 
 # Sidebar
@@ -205,12 +184,11 @@ with col4:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # Tabs
-tab_session, tab_heatmap, tab_execution, tab_benchmarks, tab_news = st.tabs([
+tab_session, tab_heatmap, tab_execution, tab_benchmarks = st.tabs([
     "Hourly Volume",
     "Volume Heatmap",
     "Order Impact",
-    "Model Benchmarks",
-    "Recent News"
+    "Model Benchmarks"
 ])
 
 # Tab 1: Hourly Volume
@@ -383,31 +361,3 @@ with tab_benchmarks:
         yaxis=dict(title="MAPE (%)", gridcolor='#2a2e39')
     )
     st.plotly_chart(fig_bench, use_container_width=True)
-
-    st.markdown("""
-    - **Forward prediction:** Ridge performs better (~21.4% MAPE) because L2 regularization prevents it from overfitting to noisy price lags.
-    - **Explanatory modeling:** HistGradientBoosting performs better (~20.4% MAPE) because it can capture non-linear interactions between spread and the time of day.
-    """)
-
-# Tab 5: News
-with tab_news:
-    st.subheader(f"Recent News: {selected_ticker}")
-    news_data = load_ticker_news(selected_ticker)
-
-    if not news_data.empty:
-        news_display = news_data.copy()
-        news_display.columns = ["Published (UTC)", "Headline", "Author", "URL"]
-        st.dataframe(
-            news_display,
-            column_config={"URL": st.column_config.LinkColumn("URL")},
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info(f"No news articles saved yet for {selected_ticker}.")
-
-    st.markdown("""
-    **NewsSurge feature:**
-    - Measures how many articles were published in the last 24 hours relative to the 14-day daily average.
-    - Uses `log(1 + NewsSurge)` to smooth out huge spikes in article count.
-    """)
