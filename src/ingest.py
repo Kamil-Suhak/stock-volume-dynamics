@@ -12,9 +12,9 @@ if str(BASE_DIR) not in sys.path:
 from src.db import init_db, get_connection, get_or_create_symbol, insert_hourly_bars, insert_articles, get_latest_timestamp
 
 BASE_URL = "https://api.massive.com/v2/aggs/ticker/"
-NEWS_URL = "https://api.massive.com/v3/reference/news"
+NEWS_URL = "https://api.massive.com/v2/reference/news"
 API_KEY = "BJox5qIIzSxo2VSBknxLN7d8uQYs7uge"
-RAW_DATA_DIR = Path("raw_data")
+RAW_DATA_DIR = BASE_DIR / "raw_data"
 SLEEP_TIME = 12.5
 
 
@@ -118,17 +118,26 @@ def ingest_news_articles(ticker, max_pages=3):
     con = get_connection()
     sym_id = get_or_create_symbol(con, ticker)
 
+    start_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=730)).strftime("%Y-%m-%d")
+
     ticker_dir = RAW_DATA_DIR / ticker
     ticker_dir.mkdir(parents=True, exist_ok=True)
     news_idx = get_next_chunk_index(ticker_dir, "news")
 
     next_url = NEWS_URL
-    params = {"ticker": ticker, "limit": 1000, "apiKey": API_KEY}
+    params = {
+        "ticker": ticker,
+        "order": "asc",
+        "limit": 1000,
+        "sort": "published_utc",
+        "published_utc.gte": start_date,
+        "apiKey": API_KEY,
+    }
     pages_fetched = 0
 
     try:
         while next_url and pages_fetched < max_pages:
-            req_params = params if next_url == NEWS_URL else {"apiKey": API_KEY}
+            req_params = params if next_url == NEWS_URL else ({"apiKey": API_KEY} if "apiKey=" not in next_url else None)
             res = request_with_retry(next_url, params=req_params)
             if not res or res.status_code != 200:
                 err_msg = res.text if res else "No response"
