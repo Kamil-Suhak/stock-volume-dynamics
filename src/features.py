@@ -117,29 +117,38 @@ def load_data(tickers=None, rth_only=True):
 
 def calc_ticker_features(group):
     g = group.sort_values('timestamp').copy()
-
     g['target_log_vol'] = np.log(g['volume'].clip(lower=1.0))
 
+    # Rolling intraday baselines (shift 1 per hour to avoid lookahead)
+    g['base_intraday'] = g.groupby('hour')['target_log_vol'].transform(
+        lambda s: s.shift(1).rolling(15, min_periods=3).median()
+    ).bfill()
+
+    g['base_5d'] = g.groupby('hour')['target_log_vol'].transform(
+        lambda s: s.shift(1).rolling(5, min_periods=2).median()
+    ).bfill()
+
+    g['regime_ratio'] = g['base_5d'] - g['base_intraday']
+    g['target_dev'] = g['target_log_vol'] - g['base_intraday']
+
+    # Relative volume (RVOL) lags
+    g['lag_rvol_1h'] = (g['target_log_vol'] - g['base_intraday']).shift(1)
+    g['lag_rvol_2h'] = (g['target_log_vol'] - g['base_intraday']).shift(2)
+    g['rvol_momentum'] = g['lag_rvol_1h'] - g['lag_rvol_2h']
+    g['lag_rvol_same_hour'] = (g['target_log_vol'] - g['base_intraday']).shift(7)
+
+    # Market price dynamics
     g['spread'] = (g['high'] - g['low']) / g['open']
     g['abs_return'] = ((g['close'] - g['open']) / g['open']).abs()
     g['overnight_gap'] = ((g['open'] - g['close'].shift(1)) / g['close'].shift(1)).abs()
 
-    # Lags for forward prediction
-    g['lag_spread'] = g['spread'].shift(1)
-    g['lag_abs_return'] = g['abs_return'].shift(1)
     trade_size = g['volume'] / g['transactions'].replace(0, 1)
     g['lag_log_trade_size'] = np.log(trade_size.clip(lower=1.0)).shift(1)
 
-    g['lag_vol_1h'] = g['target_log_vol'].shift(1)
-    g['lag_vol_2h'] = g['target_log_vol'].shift(2)
-    g['vol_momentum'] = g['lag_vol_1h'] - g['lag_vol_2h']
-    g['lag_vol_same_hour'] = g['target_log_vol'].shift(7)
-
-    # 5-hour rolling spread & 20-day range position (0 = low, 1 = high)
+    g['lag_spread'] = g['spread'].shift(1)
+    g['lag_abs_return'] = g['abs_return'].shift(1)
     g['rolling_spread_5h'] = g['spread'].rolling(5, min_periods=1).mean().shift(1)
-    rolling_high_20d = g['high'].rolling(140, min_periods=20).max().shift(1)
-    rolling_low_20d = g['low'].rolling(140, min_periods=20).min().shift(1)
-    g['range_pos_20d'] = (g['close'].shift(1) - rolling_low_20d) / (rolling_high_20d - rolling_low_20d + 1e-8)
+    g['vol_std_20h'] = g['target_log_vol'].rolling(20, min_periods=5).std().shift(1).fillna(0.3)
 
     return g
 
@@ -154,7 +163,6 @@ def build_features(df, mode="forward"):
 
     df_clean = df_feat.dropna().reset_index(drop=True)
 
-    # Dummies for hour, day, and ticker
     hour_dummies = pd.get_dummies(df_clean['hour'], prefix='hour', drop_first=True, dtype=float)
     day_dummies = pd.get_dummies(df_clean['day_of_week'], prefix='day', drop_first=True, dtype=float)
     dummy_dfs = [hour_dummies, day_dummies]
@@ -166,19 +174,19 @@ def build_features(df, mode="forward"):
     calendar_df = pd.concat(dummy_dfs, axis=1)
 
     fwd_cols = [
+        'regime_ratio', 'lag_rvol_1h', 'lag_rvol_2h', 'rvol_momentum', 'lag_rvol_same_hour',
         'lag_spread', 'lag_abs_return', 'overnight_gap', 'lag_log_trade_size',
-        'lag_vol_1h', 'lag_vol_2h', 'vol_momentum', 'lag_vol_same_hour',
-        'rolling_spread_5h', 'range_pos_20d', 'log_news_surge'
+        'rolling_spread_5h', 'vol_std_20h', 'log_news_surge'
     ]
     exp_cols = [
+        'regime_ratio', 'lag_rvol_1h', 'rvol_momentum', 'lag_rvol_same_hour',
         'spread', 'abs_return', 'overnight_gap', 'lag_log_trade_size',
-        'lag_vol_1h', 'lag_vol_2h', 'vol_momentum', 'lag_vol_same_hour',
-        'rolling_spread_5h', 'range_pos_20d', 'log_news_surge'
+        'rolling_spread_5h', 'vol_std_20h', 'log_news_surge'
     ]
 
     X_forward = pd.concat([df_clean[fwd_cols], calendar_df], axis=1)
     X_explanatory = pd.concat([df_clean[exp_cols], calendar_df], axis=1)
-    y = df_clean['target_log_vol']
+    y = df_clean['target_dev']
 
     if mode == "forward":
         return X_forward, y, df_clean

@@ -62,24 +62,28 @@ def store_benchmarks(con, benchmark_df):
     con.commit()
 
 
-def evaluate_walk_forward(X, y, df_clean, model, cv=5):
+def evaluate_walk_forward(X, y_dev, df_clean, model, cv=5):
     tscv = TimeSeriesSplit(n_splits=cv)
     fold_metrics = []
     val_preds = []
 
     for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X)):
         X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        y_train = y_dev.iloc[train_idx]
+
+        base_val = df_clean.iloc[val_idx]['base_intraday'].values
+        y_val_actual = df_clean.iloc[val_idx]['target_log_vol'].values
 
         model.fit(X_train, y_train)
-        y_pred = model.predict(X_val)
+        pred_dev = model.predict(X_val)
+        y_pred = base_val + pred_dev
 
-        fold_metrics.append(calc_metrics(y_val, y_pred))
+        fold_metrics.append(calc_metrics(y_val_actual, y_pred))
 
         val_df = df_clean.iloc[val_idx].copy()
-        val_df['actual_log_vol'] = y_val
+        val_df['actual_log_vol'] = y_val_actual
         val_df['pred_log_vol'] = y_pred
-        val_df['residual'] = y_val - y_pred
+        val_df['residual'] = y_val_actual - y_pred
         val_preds.append(val_df)
 
     all_preds = pd.concat(val_preds, ignore_index=True).drop_duplicates(subset=['bar_id']).reset_index(drop=True)
@@ -108,9 +112,15 @@ def run_training(tickers=None, n_splits=5):
     models = {
         "Ridge": Pipeline([
             ("scaler", StandardScaler()),
-            ("ridge", Ridge(alpha=10.0))
+            ("ridge", Ridge(alpha=20.0))
         ]),
-        "HistGradBoost": HistGradientBoostingRegressor(max_iter=100, random_state=42)
+        "HistGradBoost": HistGradientBoostingRegressor(
+            max_iter=120,
+            loss="absolute_error",
+            min_samples_leaf=30,
+            l2_regularization=1.0,
+            random_state=42
+        )
     }
 
     for mode in modes:
