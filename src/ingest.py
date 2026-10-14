@@ -64,9 +64,9 @@ def ingest_hourly_bars(ticker):
         con.close()
         return
 
-    ticker_dir = RAW_DATA_DIR / ticker
-    ticker_dir.mkdir(parents=True, exist_ok=True)
-    chunk_idx = get_next_chunk_index(ticker_dir, "chunk")
+    bars_dir = RAW_DATA_DIR / ticker / "bars"
+    bars_dir.mkdir(parents=True, exist_ok=True)
+    chunk_idx = get_next_chunk_index(bars_dir, "chunk")
 
     next_url = f"{BASE_URL}{ticker}/range/1/hour/{start_date}/{end_date}?adjusted=true&sort=asc&limit=5000"
 
@@ -87,7 +87,7 @@ def ingest_hourly_bars(ticker):
             if next_url and next_url.startswith("https://api.polygon.io"):
                 next_url = next_url.replace("https://api.polygon.io", "https://api.massive.com")
 
-            chunk_file = ticker_dir / f"chunk_{chunk_idx:04d}.json"
+            chunk_file = bars_dir / f"chunk_{chunk_idx:04d}.json"
             with open(chunk_file, "w") as f:
                 json.dump(data, f, indent=2)
 
@@ -120,9 +120,9 @@ def ingest_news_articles(ticker, max_pages=3):
 
     start_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=730)).strftime("%Y-%m-%d")
 
-    ticker_dir = RAW_DATA_DIR / ticker
-    ticker_dir.mkdir(parents=True, exist_ok=True)
-    news_idx = get_next_chunk_index(ticker_dir, "news")
+    news_dir = RAW_DATA_DIR / ticker / "news"
+    news_dir.mkdir(parents=True, exist_ok=True)
+    news_idx = get_next_chunk_index(news_dir, "news")
 
     next_url = NEWS_URL
     params = {
@@ -153,7 +153,7 @@ def ingest_news_articles(ticker, max_pages=3):
             if next_url and next_url.startswith("https://api.polygon.io"):
                 next_url = next_url.replace("https://api.polygon.io", "https://api.massive.com")
 
-            news_file = ticker_dir / f"news_{news_idx:04d}.json"
+            news_file = news_dir / f"news_{news_idx:04d}.json"
             with open(news_file, "w") as f:
                 json.dump(data, f, indent=2)
 
