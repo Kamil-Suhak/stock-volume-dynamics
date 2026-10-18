@@ -1,131 +1,113 @@
 # Stock Volume Dynamics – Analiza i prognozowanie wolumenu obrotu giełdowego
 
-Projekt akademicki realizowany w ramach przedmiotu z zakresu analizy danych. Aplikacja realizuje pełny potok przetwarzania danych (ang. *end-to-end data pipeline*): od pobrania historycznych notowań giełdowych przez API, przez czyszczenie i składowanie w relacyjnej bazie danych, po inżynierię cech, modelowanie statystyczne/uczenie maszynowe oraz prezentację wyników w interaktywnym dashboardzie.
+Projekt akademicki realizowany w ramach przedmiotu z zakresu analizy danych. Aplikacja realizuje pełny potok przetwarzania danych (ang. *end-to-end data pipeline*): od pobrania historycznych godzinowych notowań giełdowych przez API, przez czyszczenie i składowanie w relacyjnej bazie danych SQLite, po inżynierię cech, modelowanie statystyczne i uczenie maszynowe oraz prezentację wyników w interaktywnym dashboardzie Streamlit.
 
 ---
 
 ## 1. Cel i zakres projektu
 
-Głównym celem projektu jest analiza dynamiki wolumenu obrotu akcjami (ang. *trading volume*) dla wybranej grupy spółek oraz budowa modelu prognozującego wolumen w określonych horyzontach czasowych.
+Głównym celem projektu jest analiza dynamiki wolumenu obrotu akcjami (ang. *trading volume*) dla wybranej grupy spółek (m.in. AAPL, MSFT, NVDA, TSLA) oraz budowa modelu prognozującego wolumen w horyzoncie godzinowym.
 
-Wolumen obrotu jest kluczową zmienną rynkową – niesie informacje o płynności waloru, natężeniu aktywności inwestorów oraz sile trendów cenowych. Projekt odpowiada na następujące pytania badawcze:
-- Jak kształtuje się rozkład i sezonowość (dzienna, tygodniowa, miesięczna) wolumenu dla badanych spółek?
-- W jakim stopniu przeszłe notowania cenowe i wskaźniki zmienności determinują przyszły wolumen obrotu?
-- Z jaką dokładnością proste modele regresyjne i metody uczenia maszynowego są w stanie prognozować skoki wolumenu?
+Wolumen obrotu jest kluczową zmienną rynkową niosącą informacje o płynności waloru i aktywności inwestorów. Projekt odpowiada na następujące pytania badawcze:
+- Jak kształtuje się rozkład oraz dzienna i tygodniowa sezonowość wolumenu w godzinach sesji regularnej (RTH)?
+- W jakim stopniu przeszłe notowania, wskaźniki zmienności oraz rozpiętość cenowa determinują przyszły wolumen?
+- Z jaką dokładnością modele regresyjne (Ridge, HistGradientBoosting) prognozują odchylenia wolumenu od typowej krzywej dziennej?
 
 ---
 
 ## 2. Architektura systemu i etapy realizacji
 
-Zgodnie z wymaganiami projektowymi ([PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md)), system składa się z sześciu powiązanych etapów:
+Zgodnie z wymaganiami projektowymi ([PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md)), potok składa się z sześciu etapów:
 
 ```text
-[Zewnętrzne API]
+[Polygon / Massive API]
        │
        ▼
-1. Pobranie danych (skrypt zasilający)
+1. Pobranie danych godzinowych i buforowanie (`src/ingest.py`)
        │
        ▼
-2. Czyszczenie i transformacja (Preprocessing & EDA)
+2. Czyszczenie i analiza wstępna (`src/eda.py`, `src/features.py`)
        │
        ▼
-3. Relacyjna baza danych (SQLite)
+3. Relacyjna baza danych SQLite (`data/market.db`, `src/db.py`)
        │
-       ├──► 4. Eksport / zasilenie modułu modelowania
+       ├──► 4. Ekstrakcja danych do inżynierii cech
        │           │
        │           ▼
-       │      5. Modelowanie predykcyjne (inżynieria cech, trenowanie, metryki)
+       │      5. Trening i walidacja modeli (`src/train.py`)
        │           │
        │           ▼
-       └──► 6. Zasilenie interaktywnego dashboardu (Streamlit)
+       └──► 6. Zasilenie interaktywnego dashboardu (`app.py`)
 ```
 
 ### Opis modułów:
 1. **Pozyskanie danych (API):**
-   - Pobieranie danych historycznych (OHLCV: Open, High, Low, Close, Volume) z bezpłatnego interfejsu API (np. Yahoo Finance / Alpha Vantage / Tiingo).
-   - Parametry zapytań (lista spółek, zakres dat, interwał) definiowane w zewnętrznym pliku konfiguracyjnym JSON.
+   - Pobieranie danych godzinowych (OHLCV + liczba transakcji) oraz danych fundamentalnych za pośrednictwem API Polygon / Massive.
+   - Buforowanie odpowiedzi JSON w katalogu `raw_data/` w celu optymalizacji zapytań i limitów API.
 2. **Czyszczenie i preprocessing:**
-   - Weryfikacja spójności typów danych i ciągłości kalendarza sesji giełdowych.
-   - Obsługa braków danych (np. dni wolne od handlu) oraz identyfikacja wartości odstających (anomalie wolumenowe).
-   - Podstawowa eksploracja statystyczna (EDA).
+   - Standaryzacja strefy czasowej (UTC na czas nowojorski ET) i filtracja sesji regularnej (RTH: 09:30–16:00).
+   - Transformacja logarytmiczna wolumenu ($\ln(\text{Volume})$) stabilizująca wariancję.
+   - Wstępna eksploracja statystyczna (skrypt `src/eda.py`).
 3. **Baza danych (SQLite):**
-   - Wykorzystanie wbudowanej bazy relacyjnej `SQLite`.
-   - Zdefiniowane tabele na surowe notowania, przetworzone szeregi czasowe oraz wyniki ewaluacji modeli.
-   - Relacyjna struktura zapewnia integralność danych pomiędzy spółkami a ich notowaniami.
+   - Baza składowana lokalnie w `data/market.db`.
+   - Tabele relacyjne: `symbols` (metadane spółek), `hourly_bars` (notowania godzinowe), `predictions` (wyniki modeli), `model_benchmarks` (metryki walidacji).
 4. **Wykorzystanie bazy w potoku:**
-   - Baza nie jest pasywnym archiwum – skrypty modelowania odczytują z niej dane treningowe, a aplikacja webowa pobiera z niej aktualny stan danych i wygenerowane predykcje.
+   - Moduł modelowania zasilany jest bezpośrednio zapytaniami SQL z bazy.
+   - Predykcje modeli i metryki ewaluacyjne są zapisywane z powrotem do bazy, skąd pobiera je aplikacja Streamlit.
 5. **Modelowanie predykcyjne:**
-   - Konstrukcja cech (ang. *feature engineering*): opóźnienia czasowe (ang. *lags*), średnie kroczące (SMA/EMA wolumenu i ceny), zmienność (ang. *volatility*), rozpiętość świecy (High - Low), stopy zwrotu.
-   - Implementacja modelu uczenia maszynowego (np. regresja liniowa/grzbietowa, Random Forest lub Gradient Boosting) do predykcji wolumenu na kolejny okres (np. $t+1$, $t+5$).
-   - Ewaluacja na zbiorze testowym przy użyciu metryk: MAE, RMSE, MAPE oraz $R^2$.
-6. **Interaktywny dashboard (Streamlit):**
-   - Prezentacja wykresów świecowych oraz słupkowych dla wolumenu (z wykorzystaniem biblioteki Plotly).
-   - Porównanie wartości rzeczywistych wolumenu z predykcjami modelu.
-   - Interaktywne filtry: wybór analizowanej spółki, zmiana zakresu dat, wybór parametrów wygładzania i horyzontu predykcji.
+   - Inżynieria cech: 15-dniowy kroczący profil mediany godzinowej (baseline RVOL), opóźnienia czasowe (lags), rozpiętość świecy (High - Low), stopy zwrotu i zmienność.
+   - Dwa tryby modeli: *Forward* (wyłącznie dane historyczne) oraz *Explanatory* (z uwzględnieniem współbieżnej dynamiki cenowej).
+   - Algorytmy: regresja grzbietowa (*Ridge*) oraz gradient boosting (*HistGradientBoostingRegressor*).
+   - Ewaluacja z użyciem 5-krotnej kroczącej walidacji czasowej (*TimeSeriesSplit*) z metrykami: MAE, RMSE, MAPE.
+6. **Interaktywny dashboard (`app.py`):**
+   - Wykresy świecowe i wolumenowe (Plotly) z przełączaniem skali (dzienna / godzinowa).
+   - Analiza sezonowości: profil krzywej U z pasmem percentyli (25–75%) oraz heatmapa dzień-godzina.
+   - Zestawienie prognoz z wartościami rzeczywistymi i kalkulator wpływu wielkości zlecenia na rynek (*Participation Rate*).
 
 ---
 
-## 3. Konfiguracja (`config.json`)
-
-Kluczowe parametry projektu nie są wpisane na sztywno w kodzie źródłowym, lecz kontrolowane przez plik konfiguracyjny `config.json`, przykładowa początkowa struktura:
-
-```json
-{
-  "tickers": ["AAPL", "MSFT", "NVDA", "AMZN"],
-  "data_range": {
-    "start_date": "2022-01-01",
-    "end_date": "2024-01-01"
-  },
-  "database_path": "data/stocks.db",
-  "prediction": {
-    "target_column": "Volume",
-    "forecast_horizons_days": [1, 5],
-    "test_split_ratio": 0.2
-  }
-}
-```
-
----
-
-## 4. Struktura katalogów
+## 3. Struktura katalogów
 
 ```text
 stock-volume-dynamics/
-├── config.json               # Konfiguracja spółek, dat i parametrów modeli
+├── app.py                    # Interaktywny dashboard Streamlit
 ├── requirements.txt          # Zależności biblioteczne
 ├── README.md                 # Dokumentacja projektu
 ├── PROJECT_SPECIFICATION.md  # Wymagania akademickie projektu
 │
-├── db/                     # Baza danych SQLite i ewentualne zrzuty cache
-│   └── stocks.db
+├── data/                     # Relacyjna baza danych SQLite
+│   └── market.db
 │
-├── src/                      # Kod źródłowy projektu
-│   ├── __init__.py
-│   ├── data_loader.py        # Pobieranie danych z API
-│   ├── database.py           # Inicjalizacja schematu i operacje SQL
-│   ├── preprocessing.py      # Czyszczenie danych i inżynieria cech
-│   └── model.py              # Trening, ewaluacja i inferencja modelu
+├── raw_data/                 # Zbuforowane odpowiedzi API (JSON per spółka)
+│   └── <TICKER>/
 │
-└── app/                      # Interfejs użytkownika
-    └── dashboard.py          # Aplikacja Streamlit
+└── src/                      # Kod źródłowy potoku danych i modeli
+    ├── __init__.py
+    ├── db.py                 # Inicjalizacja schematu bazy i operacje SQL
+    ├── ingest.py             # Pobieranie danych z API i zasilanie bazy
+    ├── eda.py                # Eksploracyjna analiza danych
+    ├── features.py           # Inżynieria cech i obliczanie baseline'u
+    ├── train.py              # Trening modeli, walidacja TimeSeriesSplit
+    └── main.py               # Główny skrypt orkiestrujący zasilanie i trening
 ```
 
 ---
 
-## 5. Wykorzystane technologie
+## 4. Wykorzystane technologie
 
 - **Język:** Python 3.10+
-- **Pobieranie i manipulacja danymi:** `requests` / `yfinance`, `pandas`, `numpy`
-- **Baza danych:** `sqlite3` (moduł biblioteki standardowej Pythona)
-- **Modelowanie i statystyka:** `scikit-learn`
+- **Pobieranie danych:** `requests`, Massive / Polygon.io API
+- **Baza danych:** `sqlite3` (wbudowany moduł Pythona)
+- **Manipulacja danymi i obliczenia:** `pandas`, `numpy`
+- **Uczenie maszynowe:** `scikit-learn` (Ridge, HistGradientBoosting, TimeSeriesSplit)
 - **Wizualizacja:** `plotly`
-- **Aplikacja webowa / Dashboard:** `streamlit`
+- **Dashboard:** `streamlit`
 
 ---
 
-## 6. Uruchomienie projektu
+## 5. Uruchomienie projektu
 
-### Krok 1. Klonowanie i przygotowanie środowiska wirtualnego
+### Krok 1. Przygotowanie środowiska wirtualnego
 ```bash
 python -m venv .venv
 # Linux / macOS:
@@ -139,19 +121,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Krok 3. Pobranie danych i zasilenie bazy
+### Krok 3. Pobranie danych i trening modeli
+Uruchomienie głównego skryptu pobiera dane dla skonfigurowanych spółek, aktualizuje bazę SQLite i trenuje modele predykcyjne:
 ```bash
-python src/data_loader.py
+python src/main.py
+```
+*(Opcjonalnie)* Uruchomienie skryptu wstępnej analizy eksploracyjnej:
+```bash
+python src/eda.py
 ```
 
-### Krok 4. Trenowanie modelu i generowanie prognoz
+### Krok 4. Uruchomienie dashboardu
 ```bash
-python src/model.py
+streamlit run app.py
 ```
-
-### Krok 5. Uruchomienie dashboardu
-```bash
-streamlit run app/dashboard.py
-```
-Aplikacja zostanie uruchomiona w domyślnej przeglądarce pod adresem `http://localhost:8501`.
-
+Aplikacja zostanie uruchomiona lokalnie w przeglądarce pod adresem `http://localhost:8501`.
